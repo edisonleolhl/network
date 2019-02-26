@@ -96,9 +96,9 @@ class NetworkAwareness(app_manager.RyuApp):
         while True:
             # self.show_topology()
             hub.sleep(setting.DISCOVERY_PERIOD)
-            # self._monitor()
-            # self._save_bw_graph()
-            # self._detector()
+            self._monitor()
+            self._save_bw_graph()
+            self._detector()
             if i == 5:
                 self.get_topology(None)
                 i = 0
@@ -164,18 +164,18 @@ class NetworkAwareness(app_manager.RyuApp):
         self.get_graph(self.link_to_port.keys())
         self.shortest_paths = dict(nx.all_pairs_dijkstra_path(self.graph))
 
-    def get_all_path(self, src, dst):
-        all_path = []
+    def get_shortest_simple_paths(self, src, dst):
+        simple_paths = []
         try:
             if self.weight == self.WEIGHT_MODEL['hop']:
-                all_path = list(nx.shortest_simple_paths(self.graph, src, dst, weight='hop'))
+                simple_paths = list(nx.shortest_simple_paths(self.graph, src, dst))
             elif self.weight == self.WEIGHT_MODEL['bandwidth']:
-                all_path = list(nx.shortest_simple_paths(self.graph, src, dst, weight='bandwidth'))
+                simple_paths = list(nx.shortest_simple_paths(self.graph, src, dst, weight='bandwidth'))
             elif self.weight == self.WEIGHT_MODEL['delay']:
-                all_path = list(nx.shortest_simple_paths(self.graph, src, dst, weight='delay'))
+                simple_paths = list(nx.shortest_simple_paths(self.graph, src, dst, weight='delay'))
         except Exception as e:
             print e
-        return all_path
+        return simple_paths
 
     def _request_stats(self, datapath):
         """
@@ -315,6 +315,7 @@ class NetworkAwareness(app_manager.RyuApp):
         for stat in sorted([flow for flow in body if flow.priority == 1],
                            key=lambda flow: (flow.match.get('in_port'),
                                              flow.match.get('ipv4_dst'))):
+            print stat
             key = (stat.match['in_port'], stat.match['ipv4_dst'],
                    stat.instructions[0].actions[0].port)
             value = (stat.packet_count, stat.byte_count,
@@ -534,10 +535,11 @@ class NetworkAwareness(app_manager.RyuApp):
                 if self.sw_module is None:
                     self.sw_module = lookup_service_brick('switches')
 
-                for port in self.sw_module.ports.keys():
-                    if src_dpid == port.dpid and src_port_no == port.port_no:
-                        lldpdelay = self.sw_module.ports[port].delay
-                        self.graph[src_dpid][dpid]['lldpdelay'] = lldpdelay
+                if self.weight == self.WEIGHT_MODEL['delay']:
+                    for port in self.sw_module.ports.keys():
+                        if src_dpid == port.dpid and src_port_no == port.port_no:
+                            lldpdelay = self.sw_module.ports[port].delay
+                            self.graph[src_dpid][dpid]['lldpdelay'] = lldpdelay
             except LLDPPacket.LLDPUnknownFormat as e:
                 return
 
@@ -1052,7 +1054,7 @@ class NetworkController(ControllerBase):
         except Exception as e:
             return Response(status=500)
 
-    @route('network', '/netwgitork/spoofing_defence', methods=['PUT'])
+    @route('network', '/network/spoofing_defence', methods=['PUT'])
     def spoofing_defence_api(self, req, **kwargs):
         network = self.network_app
         try:
@@ -1077,8 +1079,11 @@ class NetworkController(ControllerBase):
             return Response(status=500)
 
     # only for user(host terminal)
-    # curl -X GET http://<nat0ip>:8080/network/querypath
-    # no parameters, easy to use
+    # command example:
+    #
+    #   curl -X GET http://<nat0ip>:8080/network/querypath
+    #
+    #  no parameters, easy to use
     @route('network', '/network/querypath', methods=['GET'])
     def user_query_path_api(self, req, **kwargs):
         network = self.network_app
@@ -1096,7 +1101,7 @@ class NetworkController(ControllerBase):
                 for dst_access_key, dst in self.network_app.access_table.items():
                     if dst[0] != nat0_ip and user_access_key != dst_access_key:
                         src_dst_str = user_ip + '-' + dst[0]
-                        available_path[src_dst_str] = self.network_app.get_all_path(user_access_key[0], dst_access_key[0])
+                        available_path[src_dst_str] = self.network_app.get_shortest_simple_paths(user_access_key[0], dst_access_key[0])
 
             print "available_path = ", available_path
             body = json.dumps(available_path)
@@ -1106,7 +1111,10 @@ class NetworkController(ControllerBase):
             return Response(status=500)
 
     # only for user(host terminal)
-    # curl -X -PUT -d '{"dst_ip":"10.0.0.3", "path":"[1,3,4,5]"}' http://<nat0ip>:8080/network/choosepath
+    # command example:
+    #
+    #   curl -X -PUT -d '{"dst_ip":"10.0.0.3", "path":"[1,3,4,5]"}' http://<nat0ip>:8080/network/choosepath
+    #
     # notice that there is no blank space in [1,3,4,5],
     # otherwise decode error, status code 404
     @route('network', '/network/choosepath', methods=['PUT'])
@@ -1127,7 +1135,7 @@ class NetworkController(ControllerBase):
                 for dst_access_key, dst in self.network_app.access_table.items():
                     if dst[0] != nat0_ip and user_access_key != dst_access_key:
                         src_dst_str = user_ip + '-' + dst[0]
-                        available_path[src_dst_str] = self.network_app.get_all_path(user_access_key[0], dst_access_key[0])
+                        available_path[src_dst_str] = self.network_app.get_shortest_simple_paths(user_access_key[0], dst_access_key[0])
             print "available_path = ", available_path
         except Exception as e:
             return Response(status=500)
@@ -1136,12 +1144,12 @@ class NetworkController(ControllerBase):
         try:
             if req.body:
                 dst_ip = eval(req.body)['dst_ip']
-                path_raw = eval(req.body)['path'] # path_raw = '[1,3,4,5]'
-                path = path_raw.strip('[]').split(',') # path = ['1','3','4','5']
+                path_raw = eval(req.body)['path']       # path_raw = '[1,3,4,5]'
+                path = path_raw.strip('[]').split(',')  # path = ['1','3','4','5']
                 for i in range(len(path)):
                     path[i] = int(path[i])
-                print "req.body.dst_ip = ", dst_ip
-                print "req.body.path = ", path # path = [1, 3, 4, 5]
+                print "req.body.dst_ip = ", dst_ip      # dst_ip = 10.0.0.3
+                print "req.body.path = ", path          # path = [1, 3, 4, 5]
         except ValueError:
             print "Parameters illegal !"
             return Response(status=400)
@@ -1153,7 +1161,7 @@ class NetworkController(ControllerBase):
                 return Response(status=404)
 
         try:
-            buffer_id = 0xffffffff # no buffer
+            buffer_id = 0xffffffff                      # no buffer
             flow_info = (2048, user_ip, dst_ip, user_access_key[1])
             self.network_app.install_flow(self.network_app.datapaths, self.network_app.link_to_port,
                                           self.network_app.access_table, path, flow_info, buffer_id, isforward=False)
