@@ -211,6 +211,7 @@ REST_DL_TYPE = 'dl_type'
 REST_DL_TYPE_ARP = 'ARP'
 REST_DL_TYPE_IPV4 = 'IPv4'
 REST_DL_TYPE_IPV6 = 'IPv6'
+REST_DL_TYPE_LLDP = 'lldp'
 REST_DL_VLAN = 'dl_vlan'
 REST_SRC_IP = 'nw_src'
 REST_DST_IP = 'nw_dst'
@@ -961,7 +962,8 @@ class Match(object):
     _CONVERT = {REST_DL_TYPE:
                 {REST_DL_TYPE_ARP: ether.ETH_TYPE_ARP,
                  REST_DL_TYPE_IPV4: ether.ETH_TYPE_IP,
-                 REST_DL_TYPE_IPV6: ether.ETH_TYPE_IPV6},
+                 REST_DL_TYPE_IPV6: ether.ETH_TYPE_IPV6,
+                 REST_DL_TYPE_LLDP: ether.ETH_TYPE_LLDP},
                 REST_NW_PROTO:
                 {REST_NW_PROTO_TCP: inet.IPPROTO_TCP,
                  REST_NW_PROTO_UDP: inet.IPPROTO_UDP,

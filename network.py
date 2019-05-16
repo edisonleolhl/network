@@ -51,9 +51,9 @@ class NetworkAwareness(app_manager.RyuApp):
         # network topology datastructure
         self.link_to_port = {}  # (src_dpid,dst_dpid)->(src_port,dst_port)
         self.access_table = {}  # {(sw,port) :[host1_ip]}
-        self.switch_port_table = {}  # dpip->port_num
-        self.access_ports = {}  # dpid->port_num
-        self.interior_ports = {}  # dpid->port_num
+        self.switch_port_table = {}  # dpip->port_num -- all port
+        self.access_ports = {}  # dpid->port_num -- access_ports = all_port_table - interior_port
+        self.interior_ports = {}  # dpid->port_num -- port connected to another switch port
         self.datapaths = {}  # dpid->Datapath Class
 
         self.graph = nx.DiGraph()
@@ -97,8 +97,8 @@ class NetworkAwareness(app_manager.RyuApp):
             # self.show_topology()
             hub.sleep(setting.DISCOVERY_PERIOD)
             self._monitor()
-            self._save_bw_graph()
-            self._detector()
+            # self._save_bw_graph()
+            # self._detector()
             if i == 5:
                 self.get_topology(None)
                 i = 0
@@ -108,28 +108,46 @@ class NetworkAwareness(app_manager.RyuApp):
         """
             Main entry method of monitoring traffic.
         """
-        if self.weight == self.WEIGHT_MODEL['bandwidth']:
-            self.stats['flow'] = {}
-            self.stats['port'] = {}
-            for dp in self.datapaths.values():
-                self.port_features.setdefault(dp.id, {})
-                self._request_stats(dp)
-            hub.sleep(setting.MONITOR_PERIOD)
-            if self.stats['flow'] or self.stats['port']:
-                # self.show_stat('flow')
-                # self.show_stat('port')
-                hub.sleep(1)
+        # if self.weight == self.WEIGHT_MODEL['bandwidth']:
+        #     self.stats['flow'] = {}
+        #     self.stats['port'] = {}
+        #     for dp in self.datapaths.values():
+        #         self.port_features.setdefault(dp.id, {})
+        #         self._request_stats(dp)
+        #     hub.sleep(setting.MONITOR_PERIOD)
+        #     if self.stats['flow'] or self.stats['port']:
+        #         # self.show_stat('flow')
+        #         # self.show_stat('port')
+        #         hub.sleep(1)
+        self.stats['flow'] = {}
+        self.stats['port'] = {}
+        for dp in self.datapaths.values():
+            self.port_features.setdefault(dp.id, {})
+            self._request_stats(dp)
+        print "used_bandwidth = ", self.used_bandwidth
+        # hub.sleep(setting.MONITOR_PERIOD)
+        # if self.stats['flow'] or self.stats['port']:
+            # self.show_stat('flow')
+            # self.show_stat('port')
+            # self.format_print(self.used_bandwidth)
+            # hub.sleep(1)
 
     def _save_bw_graph(self):
         """
             Save bandwidth data into networkx graph object.
         """
-        if self.weight == self.WEIGHT_MODEL['bandwidth']:
-            # self.logger.info("--------------create bw graph and bw_shortest_paths----------------")
-            if self.used_bandwidth:
-                self.create_bw_graph(self.used_bandwidth)
-                self.bw_shortest_paths = nx.shortest_path(self.graph, weight='bandwidth')
-            hub.sleep(setting.MONITOR_PERIOD)
+        # if self.weight == self.WEIGHT_MODEL['bandwidth']:
+        #     # self.logger.info("--------------create bw graph and bw_shortest_paths----------------")
+        #     if self.used_bandwidth:
+        #         self.create_bw_graph(self.used_bandwidth)
+        #         self.bw_shortest_paths = nx.shortest_path(self.graph, weight='bandwidth')
+        #     hub.sleep(setting.MONITOR_PERIOD)
+        # self.logger.info("--------------create bw graph and bw_shortest_paths----------------")
+        if self.used_bandwidth:
+            self.create_bw_graph(self.used_bandwidth)
+            self.bw_shortest_paths = nx.shortest_path(self.graph, weight='bandwidth')
+        # hub.sleep(setting.MONITOR_PERIOD)
+
 
     def _detector(self):
         """
@@ -315,7 +333,7 @@ class NetworkAwareness(app_manager.RyuApp):
         for stat in sorted([flow for flow in body if flow.priority == 1],
                            key=lambda flow: (flow.match.get('in_port'),
                                              flow.match.get('ipv4_dst'))):
-            print stat
+            # print stat
             key = (stat.match['in_port'], stat.match['ipv4_dst'],
                    stat.instructions[0].actions[0].port)
             value = (stat.packet_count, stat.byte_count,
@@ -715,7 +733,7 @@ class NetworkAwareness(app_manager.RyuApp):
         if src_sw_key and dst_sw_key:
             # Path has already calculated, just get it.
             path = self.get_path(src_sw_key[0], dst_sw_key[0], weight=self.weight)
-            self.logger.info("The PATH based on %s between %s<-->%s: %s" % (self.weight, ip_src, ip_dst, path))
+            # self.logger.info("The PATH based on %s between %s<-->%s: %s" % (self.weight, ip_src, ip_dst, path))
             flow_info = (eth_type, ip_src, ip_dst, in_port)
             # install flow entries to datapath along side the path.
             self.install_flow(self.datapaths,
@@ -770,13 +788,14 @@ class NetworkAwareness(app_manager.RyuApp):
     def get_host_location(self, host_ip):
         """
             Get host location info:(datapath, port) according to host ip.
+            Attention: must invoke 'pingall' command first, so that controller would know all host access info
         """
         if host_ip == '0.0.0.0' or host_ip == '255.255.255.255' or host_ip == '127.0.0.1':
             return None
         for key in self.access_table.keys():
             if self.access_table[key][0] == host_ip:
                 return key
-        self.logger.info("%s location is not found." % host_ip)
+        # self.logger.info("%s location is not found." % host_ip)
         return None
 
     def get_switches(self):
@@ -809,7 +828,7 @@ class NetworkAwareness(app_manager.RyuApp):
             self.link_to_port[
                 (src.dpid, dst.dpid)] = (src.port_no, dst.port_no)
 
-            # Find the access ports and interiorior ports
+            # Find the access ports and interior ports
             if link.src.dpid in self.switches:
                 self.interior_ports[link.src.dpid].add(link.src.port_no)
             if link.dst.dpid in self.switches:
@@ -854,6 +873,43 @@ class NetworkAwareness(app_manager.RyuApp):
     def _get_free_bw(self, capacity, speed):
         # bandwidth:Mbit/s
         return max(capacity / 10 ** 3 - speed * 8 / 10 ** 6, 0)
+
+    # path = [h1]
+    def get_path_free_bw(self, src_ip, switch_path, dst_ip):
+        '''
+        free bandwidth of a path depends on the least remaining bandwidth of those ports through the path
+        :param src_ip: str type, eg: '10.0.0.1'
+        :param switch_path: list type, eg: [1, 2, 5]
+        :param dst_ip: str type, eg: '10.0.0.3'
+        :return:
+        '''
+        # already know h1-s1port1, h2-s1port2, h3-s5port1
+        # max_bandwidth is defined in mininet topo file
+        max_bandwidth = {1: {1: 100, 2: 100, 3: 50, 4: 50, 5: 50},
+                         2: {1: 50, 2: 50},
+                         3: {1: 50, 2: 50},
+                         4: {1: 50, 2: 50},
+                         5: {1: 100, 2: 50, 3: 50}}
+        free_bw = 100 # init
+
+        src_access_switch, src_access_port = self.get_host_location(src_ip)
+        src_access_free_bw = max_bandwidth[src_access_switch][src_access_port] - \
+                             self.used_bandwidth[src_access_switch][src_access_port]
+        free_bw = min(free_bw, src_access_free_bw)
+
+        for i in range(len(switch_path)-1):
+            port1, port2 = self.link_to_port[(switch_path[i], switch_path[i+1])]
+            port1_free_bw = max_bandwidth[switch_path[i]][port1] - self.used_bandwidth[switch_path[i]][port1]
+            free_bw = min(free_bw, port1_free_bw)
+            port2_free_bw = max_bandwidth[switch_path[i+1]][port2] - self.used_bandwidth[switch_path[i+1]][port2]
+            free_bw = min(free_bw, port2_free_bw)
+
+        dst_access_switch, dst_access_port = self.get_host_location(dst_ip)
+        dst_access_free_bw = max_bandwidth[dst_access_switch][dst_access_port] - \
+                             self.used_bandwidth[dst_access_switch][dst_access_port]
+        free_bw = min(free_bw, dst_access_free_bw)
+
+        return free_bw
 
     def _get_time(self, sec, nsec):
         return sec + nsec / (10 ** 9)
@@ -1036,6 +1092,10 @@ class NetworkController(ControllerBase):
         super(NetworkController, self).__init__(req, link, data, **config)
         self.network_app = data[network_instance_name]
 
+    # for administrator
+    # command example
+    #
+    #   curl -X PUT -d '{"weight":"hop"}' http://127.0.0.1:8080/network/weight
     @route('network', '/network/weight', methods=['PUT'])
     def change_shortest_path_weight_api(self, req, **kwargs):
         network = self.network_app
@@ -1113,7 +1173,7 @@ class NetworkController(ControllerBase):
     # only for user(host terminal)
     # command example:
     #
-    #   curl -X -PUT -d '{"dst_ip":"10.0.0.3", "path":"[1,3,4,5]"}' http://<nat0ip>:8080/network/choosepath
+    #   curl -X PUT -d '{"dst_ip":"10.0.0.3", "path":"[1,3,4,5]"}' http://<nat0ip>:8080/network/choosepath
     #
     # notice that there is no blank space in [1,3,4,5],
     # otherwise decode error, status code 404
@@ -1170,3 +1230,42 @@ class NetworkController(ControllerBase):
         except Exception as e:
             print e
             return Response(status=500)
+
+    # only for user(host terminal)
+    # command example:
+    #
+    #   curl -X POST http://<nat0ip>:8080/network/query-remaining-bandwidth
+    #
+    #  no parameters, easy to use
+    @route('network', '/network/query-remaining-bandwidth', methods=['POST'])
+    def user_query_remaining_bandwidth_api(self, req, **kwargs):
+        network = self.network_app
+        user_ip = req.client_addr
+        nat0_ip = req.host.split(':')[0]
+        user_access_key = self.network_app.get_host_location(user_ip)
+        print user_ip, user_access_key
+
+        try:
+            if user_ip == '127.0.0.1':
+                return Response(content_type='application/json', body=json.dumps(('ERROR: Only allow user host to query path !')))
+        except Exception as e:
+            print e
+            return Response(status=500)
+
+        # guarantee legal parameters
+        try:
+            if req.body:
+                path_raw = eval(req.body)['path']
+                print 'path_raw = ', path_raw # path_raw = '10.0.0.1-->s1-->s2-->s5-->10.0.0.3'
+                src_ip = path_raw.replace('s', '').split('-->')[0] # src_ip = '10.0.0.1'
+                switch_path = path_raw.replace('s', '').split('-->')[1:-1] # switch_path = ['1', '2', '5']
+                switch_path = [int(x) for x in switch_path] # switch_path = [1, 2, 5]
+                dst_ip = path_raw.replace('s', '').split('-->')[-1] # dst_ip = '10.0.0.3'
+                free_bw = self.network_app.get_path_free_bw(src_ip, switch_path, dst_ip)
+                print "current path free bandwidth = ", free_bw
+                data = {"free_bw": free_bw}
+                body = json.dumps(data)
+                return Response(content_type='application/json', body=body)
+        except ValueError:
+            print "Parameters illegal !"
+            return Response(status=400)
