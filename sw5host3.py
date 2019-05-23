@@ -31,9 +31,9 @@ class MyTopo(Topo):
         self.addLink(h2, s1, bw=100)
         self.addLink(h3, s5, bw=100)
         # interior link bandwidth = 50 Mbit/s
-        self.addLink(s1, s2, bw=50)
-        self.addLink(s1, s3, bw=50)
-        self.addLink(s2, s5, bw=50)
-        self.addLink(s3, s4, bw=50)
-        self.addLink(s4, s5, bw=50)
+        self.addLink(s1, s2, bw=50, delay='100ms')
+        self.addLink(s1, s3, bw=50, delay='100ms')
+        self.addLink(s2, s5, bw=50, delay='100ms')
+        self.addLink(s3, s4, bw=50, delay='100ms')
+        self.addLink(s4, s5, bw=50, delay='100ms')
 topos = {'mytopo': (lambda: MyTopo())}
