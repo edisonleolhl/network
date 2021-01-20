@@ -38,7 +38,7 @@ network_instance_name = 'network_api_app'
 
 class NetworkAwareness(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
-    WEIGHT_MODEL = {'hop': 'hop', 'delay': "delay", "bandwidth": "bandwidth"}
+    WEIGHT_MODEL = {'hop': 'hop', 'delay': "delay", "bandwidth": "bandwidth", "ratio": "ratio"}
     _CONTEXTS = {'wsgi': WSGIApplication}
 
     def __init__(self, *args, **kwargs):
@@ -68,11 +68,13 @@ class NetworkAwareness(app_manager.RyuApp):
         self.flow_speed = {}  # maintain a queue (len=5) [b/s]
         self.stats = {}
         self.port_features = {}  # (dpid,port_no_):(config,state,curr_speed)
-        self.free_bandwidth = {}
         self.used_bandwidth = {}
+        # self.link_capacity = {} # a fixed number(10000Mb/s)
+        self.ratio_dict = {}
         self.shortest_paths = None
         self.bw_shortest_paths = None
         self.delay_shortest_paths = None
+        self.ratio_shortest_paths = None
         # delay detector information
         self.echo_latency = {}
         self.sw_module = lookup_service_brick('switches')
@@ -91,19 +93,14 @@ class NetworkAwareness(app_manager.RyuApp):
         """
             Main entry method of colleting network topology information
         """
-        i = 0
         self.get_topology(None)
         while True:
-            # self.show_topology()
+            self.show_topology()
             hub.sleep(setting.DISCOVERY_PERIOD)
             self._monitor()
-            if self.weight == self.WEIGHT_MODEL['bandwidth']:
-                self._save_bw_graph()
+            self._save_bw_graph()
             self._detector()
-            if i == 5:
-                self.get_topology(None)
-                i = 0
-            i = i + 1
+            self._cal_ratio()
 
     def _monitor(self):
         """
@@ -115,7 +112,6 @@ class NetworkAwareness(app_manager.RyuApp):
         for dp in self.datapaths.values():
             self.port_features.setdefault(dp.id, {})
             self._request_stats(dp)
-        print "used_bandwidth = ", self.used_bandwidth
         # hub.sleep(setting.MONITOR_PERIOD)
         # hub.sleep(1)
 
@@ -123,9 +119,9 @@ class NetworkAwareness(app_manager.RyuApp):
         """
             Save bandwidth data into networkx graph object.
         """
-        # if self.weight == self.WEIGHT_MODEL['bandwidth']:
         if self.used_bandwidth:
-            self.create_bw_graph(self.used_bandwidth)
+            self.create_bw_graph()
+        if self.weight == self.WEIGHT_MODEL['bandwidth']:
             self.bw_shortest_paths = nx.shortest_path(self.graph, weight='bandwidth')
         # hub.sleep(setting.MONITOR_PERIOD)
 
@@ -134,12 +130,36 @@ class NetworkAwareness(app_manager.RyuApp):
             Delay detecting functon.
             Send echo request and calculate link delay periodically
         """
-        # if self.weight == self.WEIGHT_MODEL['delay']:
         self._send_echo_request()
         self.create_link_delay()
-        self.show_delay_statis()
-        #     self.delay_shortest_paths = nx.shortest_path(self.graph, weight='delay')
+        # self.show_delay_statis()
+        if self.weight == self.WEIGHT_MODEL['delay']:
+            self.delay_shortest_paths = nx.shortest_path(self.graph, weight='delay')
         #     hub.sleep(setting.DELAY_DETECTING_PERIOD)
+
+    def _cal_ratio(self):
+        """must measure bandwidth first"""
+        if self.used_bandwidth is not None and self.weight == self.WEIGHT_MODEL['ratio']:
+            # Hard Code: self-defined mn topo link capacity = 40Mb/s
+            alpha = 10
+            beta = 1
+            link_capacity = 40
+            for src_dpid in self.graph:
+                self.ratio_dict.setdefault(src_dpid, {})
+                for dst_dpid in self.graph[src_dpid]:
+                    if src_dpid == dst_dpid:
+                        self.graph[src_dpid][dst_dpid]['ratio'] = 0
+                    elif (src_dpid, dst_dpid) in self.link_to_port and src_dpid in self.used_bandwidth and dst_dpid in self.used_bandwidth:
+                        (src_port, dst_port) = self.link_to_port[(src_dpid, dst_dpid)]
+                        bw_src = self.used_bandwidth[src_dpid][src_port]
+                        bw_dst = self.used_bandwidth[dst_dpid][dst_port]
+                        bandwidth = min(bw_src, bw_dst)
+                        ratio = alpha * self.graph[src_dpid][dst_dpid]['delay'] + \
+                            beta * bandwidth / link_capacity
+                        self.ratio_dict[src_dpid][dst_dpid] = ratio
+                        self.graph[src_dpid][dst_dpid]['ratio'] = ratio
+            self.ratio_shortest_paths = nx.shortest_path(self.graph, weight='ratio')
+
 
     # List the event list should be listened.
     events = [event.EventSwitchEnter,
@@ -223,7 +243,7 @@ class NetworkAwareness(app_manager.RyuApp):
                 #     self.graph.add_edge(src, dst, weight=float('inf'))
         return self.graph
 
-    def create_bw_graph(self, bw_dict):
+    def create_bw_graph(self):
         """
             Adding weight of 'bandwidth' into graph.
         """
@@ -232,10 +252,10 @@ class NetworkAwareness(app_manager.RyuApp):
                 for dst_dpid in self.graph[src_dpid]:
                     if src_dpid == dst_dpid:
                         self.graph[src_dpid][dst_dpid]['bandwidth'] = 0
-                    elif (src_dpid, dst_dpid) in self.link_to_port and src_dpid in bw_dict and dst_dpid in bw_dict:
+                    elif (src_dpid, dst_dpid) in self.link_to_port and src_dpid in self.used_bandwidth and dst_dpid in self.used_bandwidth:
                         (src_port, dst_port) = self.link_to_port[(src_dpid, dst_dpid)]
-                        bw_src = bw_dict[src_dpid][src_port]
-                        bw_dst = bw_dict[dst_dpid][dst_port]
+                        bw_src = self.used_bandwidth[src_dpid][src_port]
+                        bw_dst = self.used_bandwidth[dst_dpid][dst_port]
                         bandwidth = min(bw_src, bw_dst)
                         # add key:value of bandwidth into graph. this is di-graph
                         self.graph[src_dpid][dst_dpid]['bandwidth'] = bandwidth
@@ -341,8 +361,8 @@ class NetworkAwareness(app_manager.RyuApp):
         body = ev.msg.body
         dpid = ev.msg.datapath.id
         self.stats['port'][dpid] = body
-        self.free_bandwidth.setdefault(dpid, {})
         self.used_bandwidth.setdefault(dpid, {})
+        # self.link_capacity.setdefault(dpid, {})
         for stat in sorted(body, key=attrgetter('port_no')):
             port_no = stat.port_no
             if port_no != ofproto_v1_3.OFPP_LOCAL:
@@ -758,7 +778,14 @@ class NetworkAwareness(app_manager.RyuApp):
             except:
                 self.logger.debug('no bw shortest_paths!')
                 return
-
+        elif weight == self.WEIGHT_MODEL['ratio']:
+            try:
+                paths = self.ratio_shortest_paths.get(src).get(dst)
+                return paths
+            except:
+                self.logger.debug('no ratio shortest_paths!')
+                return
+    
     def get_host_location(self, host_ip):
         """
             Get host location info:(datapath, port) according to host ip.
@@ -820,11 +847,10 @@ class NetworkAwareness(app_manager.RyuApp):
         # Calculate free bandwidth of port and save it.
         port_feature = self.port_features.get(dpid).get(port_no)
         if port_feature:
-            capacity = port_feature[2]  # get the port's curr_speed(that means port's max link capacity [kbps])
-            free_bw = self._get_free_bw(capacity, speed)  # get free(surplus) bandwidth (capacity minus speed)
-            self.free_bandwidth[dpid].setdefault(port_no, None)
+            # capacity = port_feature[2]  # get the port's curr_speed(that means port's max link capacity [kbps])
+            # self.link_capacity[dpid].setdefault(port_no, None)
+            # self.link_capacity[dpid][port_no] = capacity  / 10 ** 3  # Mbit/s
             self.used_bandwidth[dpid].setdefault(port_no, None)
-            self.free_bandwidth[dpid][port_no] = free_bw  # Mbit/s
             self.used_bandwidth[dpid][port_no] = speed * 8 / 10 ** 6  # Mbit/s
         else:
             self.logger.info("Fail in getting port state")
@@ -842,10 +868,6 @@ class NetworkAwareness(app_manager.RyuApp):
             return (now - pre) / (period)
         else:
             return 0
-
-    def _get_free_bw(self, capacity, speed):
-        # bandwidth:Mbit/s
-        return max(capacity / 10 ** 3 - speed * 8 / 10 ** 6, 0)
 
     # TODO: following wrong example also works
     # curl -X POST -d '{"path":"10.0.0.1-->s1-->s2-->10.0.0.3"}' http://10.0.0.4:8080/network/query-remaining-bandwidth
@@ -962,35 +984,37 @@ class NetworkAwareness(app_manager.RyuApp):
         # print "switch_port_table = ", self.switch_port_table
         # print "interior_ports = ", self.interior_ports
         # print "access_ports = ", self.access_ports
-        # print "free_bandwidth (Mbit/s)= ",self.free_bandwidth
-        if self.weight == self.WEIGHT_MODEL['bandwidth']:
-            print "used_bandwidth (Mbit/s)= "
-            self.format_print(self.used_bandwidth)
+        # print "link_capacity (Mbit/s)= ", self.link_capacity
+        print "ratio= "
+        self.format_print(self.ratio_dict)
+        print "used_bandwidth (Mbit/s)= "
+        self.format_print(self.used_bandwidth)
 
         if self.weight == self.WEIGHT_MODEL['hop']:
             print "hop_shortest_paths = "
             self.format_print(self.shortest_paths)
-
-        if self.weight == self.WEIGHT_MODEL['bandwidth']:
+        elif self.weight == self.WEIGHT_MODEL['bandwidth']:
             print "bw_shortest_paths = "
             self.format_print(self.bw_shortest_paths)
-
         elif self.weight == self.WEIGHT_MODEL['delay']:
             print "delay_shortest_paths = "
             self.format_print(self.delay_shortest_paths)
+        elif self.weight == self.WEIGHT_MODEL['ratio']:
+            print "ratio_shortest_paths = "
+            self.format_print(self.ratio_shortest_paths)
 
-        if self.pre_graph != self.graph and setting.TOSHOW:
-            print "----------------------------------Topo____Graph----------------------------------"
-            print '%10s' % ("switch"),
-            for i in self.graph.nodes():
-                print '%10d' % i,
-            print ""
-            for i in self.graph.nodes():
-                print '%10d' % i,
-                for j in self.graph[i].values():
-                    print '%10.0f' % j['weight'],
-                print ""
-            self.pre_graph = copy.deepcopy(self.graph)
+        # if self.pre_graph != self.graph and setting.TOSHOW:
+        #     print "----------------------------------Topo____Graph----------------------------------"
+        #     print '%10s' % ("switch"),
+        #     for i in self.graph.nodes():
+        #         print '%10d' % i,
+        #     print ""
+        #     for i in self.graph.nodes():
+        #         print '%10d' % i,
+        #         for j in self.graph[i].values():
+        #             print '%10.0f' % j['weight'],
+        #         print ""
+        #     self.pre_graph = copy.deepcopy(self.graph)
 
         if self.pre_link_to_port != self.link_to_port and setting.TOSHOW:
             print "----------------------------------Link to  Port----------------------------------"
